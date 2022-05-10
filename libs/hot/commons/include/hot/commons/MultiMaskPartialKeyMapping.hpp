@@ -500,20 +500,20 @@ template<> inline typename MultiMaskPartialKeyMapping<4u>::ExtractionDataArray M
 template<> inline typename MultiMaskPartialKeyMapping<1u>::ExtractionDataArray MultiMaskPartialKeyMapping<1u>::zeroInitializedArray() {
 	ExtractionDataArray data;
 	data[0] = 0ul;
-	return std::move(data);
+	return data;
 }
 
 template<> inline typename MultiMaskPartialKeyMapping<2u>::ExtractionDataArray MultiMaskPartialKeyMapping<2u>::zeroInitializedArray() {
 	ExtractionDataArray data;
 	data[0] = 0ul;
 	data[1] = 0ul;
-	return std::move(data);
+	return data;
 }
 
 template<> inline typename MultiMaskPartialKeyMapping<4u>::ExtractionDataArray MultiMaskPartialKeyMapping<4u>::zeroInitializedArray() {
 	ExtractionDataArray data;
 	_mm256_storeu_si256(reinterpret_cast<__m256i*>(data.data()), _mm256_setzero_si256());
-	return std::move(data);
+	return data;
 }
 
 template<unsigned int numberExtractionMasks> inline uint8_t MultiMaskPartialKeyMapping<numberExtractionMasks>::getExtractionByteAt(typename MultiMaskPartialKeyMapping<numberExtractionMasks>::ExtractionDataArray const &extractionData, uint32_t extractionByteIndex) {

@@ -1,5 +1,4 @@
-#ifndef __HOT__SINGLE_THREADED__HOT_SINGLE_THREADED_INTERFACE__
-#define __HOT__SINGLE_THREADED__HOT_SINGLE_THREADED_INTERFACE__
+#pragma once
 
 #include <array>
 #include <cassert>
@@ -36,7 +35,7 @@
 namespace hot {
     namespace singlethreaded {
 
-        constexpr uint32_t MAXIMUM_NUMBER_NODE_ENTRIES = 32u;
+        //constexpr uint32_t MAXIMUM_NUMBER_NODE_ENTRIES = 32u;
 
 /**
  * HOTSingleThreaded represents a single threaded height optimized trie.
@@ -55,19 +54,25 @@ namespace hot {
             static const_iterator END_ITERATOR;
 
             HOTSingleThreadedChildPointer mRoot;
+            std::vector<ResultType> tidList;
 
-            static constexpr ValueType extractKey(ResultType &res) {
+            static constexpr const ValueType &extractKey(const ResultType &res) {
                 return res.value;
             }
 
-            static constexpr ResultType tidToValue(intptr_t tid) {
-                return reinterpret_cast<ResultType *>(tid);
+            constexpr ResultType &tidToValue(intptr_t tid) {
+                return tidList[tid];
             }
+
+            constexpr intptr_t valueToTID(const ValueType value, const TIDType tid) {
+                tidList.emplace_back(value, tid);
+                return tidList.size() - 1;
+            }
+
 
             //actually more a contains
             //TODO: test if val for comparison is actually needed
-            static bool contentEquals(ValueType val, TIDType tid, ResultType res)
-            {
+            static bool contentEquals(ValueType val, TIDType tid, ResultType res) {
                 return extractKey(res) == val && res.contains(tid);
             }
 
@@ -76,7 +81,7 @@ namespace hot {
             /**
              * Creates an empty order preserving index structure based on the HOT algorithm
              */
-            HOTSingleThreadedPayload() : mRoot{} {
+            HOTSingleThreadedPayload() : mRoot{}, tidList{} {
             }
 
             HOTSingleThreadedPayload(HOTSingleThreadedPayload const &other) = delete;
@@ -84,6 +89,7 @@ namespace hot {
             HOTSingleThreadedPayload(HOTSingleThreadedPayload &&other) noexcept {
                 mRoot = other.mRoot;
                 other.mRoot = {};
+                std::swap(tidList, other.tidList);
             }
 
             HOTSingleThreadedPayload &operator=(HOTSingleThreadedPayload const &other) = delete;
@@ -91,6 +97,7 @@ namespace hot {
             HOTSingleThreadedPayload &operator=(HOTSingleThreadedPayload &&other) noexcept {
                 mRoot = other.mRoot;
                 other.mRoot = {};
+                std::swap(tidList, other.tidList);
                 return *this;
             }
 
@@ -124,7 +131,7 @@ namespace hot {
                     current = *currentChildPointer;
                 }
                 return current.isLeaf() ? extractAndMatchLeafValue(current, key)
-                                        : idx::contenthelpers::OptionalValue<ValueType>();
+                                        : idx::contenthelpers::OptionalValue<ResultType>();
             }
 
             idx::contenthelpers::OptionalValue<ResultType>
@@ -140,7 +147,8 @@ namespace hot {
              * @param numberValues the number of values to scan in sequential order
              * @return the record after scanning n values starting at the given key. If not the given number of values can be traversed the resulting value is invalid.
              */
-            inline idx::contenthelpers::OptionalValue<ResultType> scan(ValueType const &key, size_t numberValues) const {
+            inline idx::contenthelpers::OptionalValue<ResultType>
+            scan(ValueType const &key, size_t numberValues) const {
                 const_iterator iterator = lower_bound(key);
                 for (size_t i = 0u; i < numberValues && iterator != end(); ++i) {
                     ++iterator;
@@ -176,8 +184,7 @@ namespace hot {
                     std::array<HOTSingleThreadedInsertStackEntry, 64> insertStack;
                     unsigned int leafDepth = searchForInsert(keyBytes, insertStack);
                     intptr_t tid = insertStack[leafDepth].mChildPointer->getTid();
-                    auto const &existingKey = extractKey(tidToValue(tid));
-                    wasContained = idx::contenthelpers::contentEquals(existingKey, key);
+                    wasContained = contentEquals(key, tid, tidToValue(tid));
                     if (wasContained) {
                         removeWithStack(insertStack, leafDepth - 1);
                     }
@@ -196,42 +203,7 @@ namespace hot {
              * @param value the value to insert.
              * @return true if the value can be inserted, false if the index already contains a value for the corresponding key
              */
-            inline bool insert(ValueType const &value) {
-                bool inserted = true;
-                auto const &fixedSizeKey = idx::contenthelpers::toFixSizedKey(
-                        idx::contenthelpers::toBigEndianByteOrder(extractKey(value)));
-                uint8_t const *keyBytes = idx::contenthelpers::interpretAsByteArray(fixedSizeKey);
-
-                if (isRootANode()) {
-                    std::array<HOTSingleThreadedInsertStackEntry, 64> insertStack;
-                    unsigned int leafDepth = searchForInsert(keyBytes, insertStack);
-                    intptr_t tid = insertStack[leafDepth].mChildPointer->getTid();
-                    KeyType const &existingKey = extractKey(idx::contenthelpers::tidToValue<ValueType>(tid));
-                    inserted = insertWithInsertStack(insertStack, leafDepth, existingKey, keyBytes, value);
-                } else if (mRoot.isLeaf()) {
-                    HOTSingleThreadedChildPointer valueToInsert(idx::contenthelpers::valueToTid(value));
-                    ValueType const &currentLeafValue = idx::contenthelpers::tidToValue<ValueType>(mRoot.getTid());
-                    auto const &existingFixedSizeKey = idx::contenthelpers::toFixSizedKey(
-                            idx::contenthelpers::toBigEndianByteOrder(extractKey(currentLeafValue)));
-                    uint8_t const *existingKeyBytes = idx::contenthelpers::interpretAsByteArray(existingFixedSizeKey);
-
-                    inserted = hot::commons::executeForDiffingKeys(existingKeyBytes, keyBytes,
-                                                                   idx::contenthelpers::getMaxKeyLength<KeyType>(),
-                                                                   [&](hot::commons::DiscriminativeBit const &significantKeyInformation) {
-                                                                       hot::commons::BiNode<HOTSingleThreadedChildPointer> const &binaryNode = hot::commons::BiNode<HOTSingleThreadedChildPointer>::createFromExistingAndNewEntry(
-                                                                               significantKeyInformation, mRoot,
-                                                                               valueToInsert);
-                                                                       mRoot = hot::commons::createTwoEntriesNode<HOTSingleThreadedChildPointer, HOTSingleThreadedNode>(
-                                                                               binaryNode)->toChildPointer();
-                                                                   });
-
-                } else {
-                    mRoot = HOTSingleThreadedChildPointer(idx::contenthelpers::valueToTid(value));
-                }
-                return inserted;
-            }
-
-            inline bool insert(ValueType const &value, intptr_t const &key) {
+            inline bool insert(ValueType const &value, TIDType &tid) {
                 bool inserted = true;
                 auto const &fixedSizeKey = idx::contenthelpers::toFixSizedKey(
                         idx::contenthelpers::toBigEndianByteOrder(value));
@@ -239,29 +211,34 @@ namespace hot {
 
                 if (isRootANode()) {
                     std::array<HOTSingleThreadedInsertStackEntry, 64> insertStack;
-                    unsigned int leafDepth = searchForInsert(keyBytes, insertStack);
-                    intptr_t tid = insertStack[leafDepth].mChildPointer->getTid();
-                    KeyType const &existingKey = extractKey(idx::contenthelpers::tidToValue<ValueType>(tid));
-                    inserted = insertWithInsertStack(insertStack, leafDepth, existingKey, keyBytes, value);
+                    auto leafDepth = searchForInsert(keyBytes, insertStack);
+                    auto tidPtr = insertStack[leafDepth].mChildPointer->getTid();
+                    auto const &existingKey = extractKey(tidToValue(tidPtr));
+                    inserted = insertWithInsertStack(insertStack, leafDepth, existingKey, keyBytes, value, tid);
                 } else if (mRoot.isLeaf()) {
-                    HOTSingleThreadedChildPointer valueToInsert(key);
-                    ValueType const &currentLeafValue = idx::contenthelpers::tidToValue<ValueType>(mRoot.getTid());
+
+                    auto &currentLeafValue = tidToValue(mRoot.getTid());
                     auto const &existingFixedSizeKey = idx::contenthelpers::toFixSizedKey(
                             idx::contenthelpers::toBigEndianByteOrder(extractKey(currentLeafValue)));
                     uint8_t const *existingKeyBytes = idx::contenthelpers::interpretAsByteArray(existingFixedSizeKey);
 
                     inserted = hot::commons::executeForDiffingKeys(existingKeyBytes, keyBytes,
-                                                                   idx::contenthelpers::getMaxKeyLength<KeyType>(),
+                                                                   idx::contenthelpers::getMaxKeyLength<ValueType>(),
                                                                    [&](hot::commons::DiscriminativeBit const &significantKeyInformation) {
+                                                                       HOTSingleThreadedChildPointer valueToInsert(
+                                                                               valueToTID(value, tid));
                                                                        hot::commons::BiNode<HOTSingleThreadedChildPointer> const &binaryNode = hot::commons::BiNode<HOTSingleThreadedChildPointer>::createFromExistingAndNewEntry(
                                                                                significantKeyInformation, mRoot,
                                                                                valueToInsert);
                                                                        mRoot = hot::commons::createTwoEntriesNode<HOTSingleThreadedChildPointer, HOTSingleThreadedNode>(
                                                                                binaryNode)->toChildPointer();
+                                                                   },
+                                                                   [&]() {
+                                                                       currentLeafValue.push_back(tid);
                                                                    });
 
                 } else {
-                    mRoot = HOTSingleThreadedChildPointer(idx::contenthelpers::valueToTid(value));
+                    mRoot = HOTSingleThreadedChildPointer(valueToTID(value, tid));
                 }
                 return inserted;
             }
@@ -329,14 +306,10 @@ namespace hot {
                                                                                                   ? newSplitEntries.mRight
                                                                                                   : newSplitEntries.mLeft;
                                 nodePointerContainingSplitEntries.getNode()->getPointers()[correspondingEntryIndexInPart] = valueToReplace;
-                                integrateBiNodeIntoTree(insertStack, parentDepth, newSplitEntries, true);
+                                this->integrateBiNodeIntoTree(insertStack, parentDepth, newSplitEntries, true);
                             }
                             delete &parentNode;
                         });
-
-
-
-
                         //Order because branch prediction might choose this case in first place
 
                     }
@@ -372,18 +345,19 @@ namespace hot {
                                                                                    HOTSingleThreadedChildPointer const &leafEntry = *insertStack[nextInsertDepth].mChildPointer;
                                                                                    //in case the current partition is a leaf partition add it to the partition
                                                                                    //otherwise create new leaf partition containing the existing leaf node and the new value
-                                                                                   integrateBiNodeIntoTree(insertStack,
-                                                                                                           nextInsertDepth,
-                                                                                                           hot::commons::BiNode<HOTSingleThreadedChildPointer>::createFromExistingAndNewEntry(
-                                                                                                                   insertInformation.mKeyInformation,
-                                                                                                                   leafEntry,
-                                                                                                                   valueToInsert
-                                                                                                           ), true);
+                                                                                   this->integrateBiNodeIntoTree(
+                                                                                           insertStack,
+                                                                                           nextInsertDepth,
+                                                                                           hot::commons::BiNode<HOTSingleThreadedChildPointer>::createFromExistingAndNewEntry(
+                                                                                                   insertInformation.mKeyInformation,
+                                                                                                   leafEntry,
+                                                                                                   valueToInsert
+                                                                                           ), true);
                                                                                } else if (isSingleEntry) { //in this case the single entry is a boundary node -> insert the value into the child partition
                                                                                    insertStack[nextInsertDepth].mChildPointer->executeForSpecificNodeType(
                                                                                            false,
                                                                                            [&](auto &childPartition) -> void {
-                                                                                               insertNewValueResultingInNewPartitionRoot(
+                                                                                               this->insertNewValueResultingInNewPartitionRoot(
                                                                                                        childPartition,
                                                                                                        insertStack,
                                                                                                        significantKeyInformation,
@@ -391,24 +365,24 @@ namespace hot {
                                                                                                        valueToInsert);
                                                                                            });
                                                                                } else {
-                                                                                   insertNewValue(existingNode,
-                                                                                                  insertStack,
-                                                                                                  insertInformation,
-                                                                                                  insertDepth,
-                                                                                                  valueToInsert);
+                                                                                   this->insertNewValue(existingNode,
+                                                                                                        insertStack,
+                                                                                                        insertInformation,
+                                                                                                        insertDepth,
+                                                                                                        valueToInsert);
                                                                                }
                                                                            });
             }
 
             inline bool insertWithInsertStack(std::array<HOTSingleThreadedInsertStackEntry, 64> &insertStack,
                                               unsigned int leafDepth,
-                                              KeyType const &existingKey, uint8_t const *newKeyBytes,
-                                              ValueType const &newValue) {
+                                              ValueType const &existingKey, uint8_t const *newKeyBytes,
+                                              ValueType const &newValue, TIDType &tid) {
                 auto const &existingFixedSizeKey = idx::contenthelpers::toFixSizedKey(
                         idx::contenthelpers::toBigEndianByteOrder(existingKey));
                 uint8_t const *existingKeyBytes = idx::contenthelpers::interpretAsByteArray(existingFixedSizeKey);
                 return hot::commons::executeForDiffingKeys(existingKeyBytes, newKeyBytes,
-                                                           idx::contenthelpers::getMaxKeyLength<KeyType>(),
+                                                           idx::contenthelpers::getMaxKeyLength<ValueType>(),
                                                            [&](hot::commons::DiscriminativeBit const &significantKeyInformation) {
                                                                unsigned int insertDepth = 0;
                                                                //searches for the node to insert the new value into.
@@ -423,12 +397,14 @@ namespace hot {
                                                                assert(insertDepth < leafDepth);
 
                                                                HOTSingleThreadedChildPointer valueToInsert(
-                                                                       idx::contenthelpers::valueToTid(newValue));
+                                                                       valueToTID(newValue, tid));
                                                                insertNewValueIntoNode(insertStack,
                                                                                       significantKeyInformation,
                                                                                       insertDepth, leafDepth,
                                                                                       valueToInsert);
-                                                           });
+                                                           }, [&]() {
+                            tidList[insertStack[leafDepth].mChildPointer->getTid()].push_back(tid);
+                        });
             }
 
             /**
@@ -439,7 +415,7 @@ namespace hot {
              * @param newValue the value to upsert.
              * @return the value of a previously contained value for the same key or an invalid result otherwise
              */
-            inline idx::contenthelpers::OptionalValue<ValueType> upsert(ValueType newValue) {
+            /*inline idx::contenthelpers::OptionalValue<ValueType> upsert(ValueType newValue) {
                 KeyType newKey = extractKey(newValue);
                 auto const &fixedSizeKey = idx::contenthelpers::toFixSizedKey(
                         idx::contenthelpers::toBigEndianByteOrder(extractKey(newValue)));
@@ -455,23 +431,23 @@ namespace hot {
                         return idx::contenthelpers::OptionalValue<ValueType>();
                     } else {
                         *insertStack[leafDepth].mChildPointer = HOTSingleThreadedChildPointer(
-                                idx::contenthelpers::valueToTid(newValue));
+                                idx::contenthelpers::valueToTID(newValue));
                         return idx::contenthelpers::OptionalValue<ValueType>(true, existingValue);;
                     }
                 } else if (mRoot.isLeaf()) {
                     ValueType existingValue = idx::contenthelpers::tidToValue<ValueType>(mRoot.getTid());
                     if (idx::contenthelpers::contentEquals(extractKey(existingValue), newKey)) {
-                        mRoot = HOTSingleThreadedChildPointer(idx::contenthelpers::valueToTid(newValue));
+                        mRoot = HOTSingleThreadedChildPointer(idx::contenthelpers::valueToTID(newValue));
                         return {true, existingValue};
                     } else {
                         insert(newValue);
                         return {};
                     }
                 } else {
-                    mRoot = HOTSingleThreadedChildPointer(idx::contenthelpers::valueToTid(newValue));
+                    mRoot = HOTSingleThreadedChildPointer(idx::contenthelpers::valueToTID(newValue));
                     return {};
                 }
-            }
+            }*/
 
             /**
              * @return an iterator to the first value according to the key order.
@@ -494,16 +470,16 @@ namespace hot {
              * @param searchKey the key to search a matching entry for
              * @return either an iterator pointing to the matching entry or the end iterator
              */
-            inline const_iterator find(KeyType const &searchKey) const {
+            inline const_iterator find(ValueType const &searchKey) const {
                 return isRootANode() ? findForNonEmptyTrie(searchKey) : END_ITERATOR;
             }
 
         private:
-            inline const_iterator findForNonEmptyTrie(KeyType const &searchKey) const {
+            inline const_iterator findForNonEmptyTrie(ValueType const &searchKey) const {
                 HOTSingleThreadedChildPointer const *current = &mRoot;
 
                 auto const &fixedSizedSearchKey = idx::contenthelpers::toFixSizedKey(
-                        idx::contenthelpers::toBigEndianByteOrder(extractKey(searchKey)));
+                        idx::contenthelpers::toBigEndianByteOrder(searchKey));
                 uint8_t const *searchKeyBytes = idx::contenthelpers::interpretAsByteArray(fixedSizedSearchKey);
 
                 const_iterator it(current, current + 1);
@@ -513,8 +489,9 @@ namespace hot {
                     }), current->getNode()->end());
                 }
 
-                ValueType const &leafValue = idx::contenthelpers::tidToValue<ValueType>(current->getTid());
+                auto const &leafValue = tidToValue(current->getTid());
 
+                //TODO: content equals without TID check?
                 return idx::contenthelpers::contentEquals(extractKey(leafValue), searchKey) ? it : END_ITERATOR;
             }
 
@@ -526,7 +503,7 @@ namespace hot {
              * @param searchKey the search key to determine the lower bound for
              * @return either the first entry which has a key, which is not smaller than the given search key or the end iterator if no entry fullfills the lower bound condition
              */
-            inline const_iterator lower_bound(KeyType const &searchKey) const {
+            inline const_iterator lower_bound(ValueType const &searchKey) const {
                 return lower_or_upper_bound(searchKey, true);
             }
 
@@ -536,12 +513,12 @@ namespace hot {
              * @param searchKey the search key to determine the upper bound for
              * @return either the first entry which has a key larger than the search key or the end iterator if no entry fulfills the uper bound condition
              */
-            inline const_iterator upper_bound(KeyType const &searchKey) const {
+            inline const_iterator upper_bound(ValueType const &searchKey) const {
                 return lower_or_upper_bound(searchKey, false);
             }
 
         private:
-            inline const_iterator lower_or_upper_bound(KeyType const &searchKey, bool is_lower_bound = true) const {
+            inline const_iterator lower_or_upper_bound(ValueType const &searchKey, bool is_lower_bound = true) const {
                 if (isEmpty()) {
                     return END_ITERATOR;
                 }
@@ -549,9 +526,10 @@ namespace hot {
                 const_iterator it(&mRoot, &mRoot + 1);
 
                 if (mRoot.isLeaf()) {
-                    ValueType const &existingValue = idx::contenthelpers::tidToValue<ValueType>(mRoot.getTid());
-                    KeyType const &existingKey = extractKey(existingValue);
+                    auto const &existingValue = tidToValue(mRoot.getTid());
+                    auto const &existingKey = extractKey(existingValue);
 
+                    //TODO: equals ignoring TIDs
                     return (idx::contenthelpers::contentEquals(searchKey, existingKey) ||
                             compareKeys(existingKey, searchKey)) ? it : END_ITERATOR;
                 } else {
@@ -569,13 +547,13 @@ namespace hot {
                         }), current->getNode()->end());
                     }
 
-                    ValueType const &existingValue = *it;
+                    auto const &existingValue = *it; //TODO: fix * operator to call local tidToValue function
                     auto const &existingFixedSizeKey = idx::contenthelpers::toFixSizedKey(
                             idx::contenthelpers::toBigEndianByteOrder(extractKey(existingValue)));
                     uint8_t const *existingKeyBytes = idx::contenthelpers::interpretAsByteArray(existingFixedSizeKey);
 
                     bool keysDiff = hot::commons::executeForDiffingKeys(existingKeyBytes, keyBytes,
-                                                                        idx::contenthelpers::getMaxKeyLength<KeyType>(),
+                                                                        idx::contenthelpers::getMaxKeyLength<ValueType>(),
                                                                         [&](hot::commons::DiscriminativeBit const &significantKeyInformation) {
                                                                             //searches for the node to insert the new value into.
                                                                             //Be aware that this can result in a false positive. Therefor in case only a single entry is affected and it has a child node it must be inserted into the child node
@@ -762,8 +740,9 @@ namespace hot {
                 }
             }
 
-            static bool hasTheSameKey(intptr_t tid, KeyType const &key) {
-                KeyType const &storedKey = extractKey(idx::contenthelpers::tidToValue<ValueType>(tid));
+            bool hasTheSameKey(intptr_t tid, ValueType const &key) {
+                auto const &storedKey = extractKey(tidToValue(tid));
+                //TODO: contentEquals without tid?
                 return idx::contenthelpers::contentEquals(storedKey, key);
             }
 
@@ -906,139 +885,60 @@ namespace hot {
                 return isEmpty() ? 0 : mRoot.getHeight();
 
             }
-        };
 
-        inline void integrateBiNodeIntoTree(std::array<HOTSingleThreadedInsertStackEntry, 64> &insertStack,
-                                            unsigned int currentDepth,
-                                            hot::commons::BiNode<HOTSingleThreadedChildPointer> const &splitEntries,
-                                            bool const newIsRight) {
-            if (currentDepth == 0) {
-                *insertStack[0].mChildPointer = hot::commons::createTwoEntriesNode<HOTSingleThreadedChildPointer, HOTSingleThreadedNode>(
-                        splitEntries)->toChildPointer();
-            } else {
-                unsigned int parentDepth = currentDepth - 1;
-                HOTSingleThreadedInsertStackEntry const &parentInsertStackEntry = insertStack[parentDepth];
-                HOTSingleThreadedChildPointer parentNodePointer = *parentInsertStackEntry.mChildPointer;
+        private:
+            template<typename NodeType>
+            inline void insertNewValue(
+                    NodeType const &existingNode, std::array<HOTSingleThreadedInsertStackEntry, 64> &insertStack,
+                    hot::commons::InsertInformation const &insertInformation, unsigned int insertDepth,
+                    HOTSingleThreadedChildPointer const &valueToInsert
+            ) {
+                HOTSingleThreadedInsertStackEntry const &insertStackEntry = insertStack[insertDepth];
 
-                HOTSingleThreadedNodeBase *existingParentNode = parentNodePointer.getNode();
-                if (existingParentNode->mHeight >
-                    splitEntries.mHeight) { //create intermediate partition if height(partition) + 1 < height(parentPartition)
-                    *insertStack[currentDepth].mChildPointer = hot::commons::createTwoEntriesNode<HOTSingleThreadedChildPointer, HOTSingleThreadedNode>(
-                            splitEntries)->toChildPointer();
-                } else { //integrate nodes into parent partition
-                    hot::commons::DiscriminativeBit const significantKeyInformation{
-                            splitEntries.mDiscriminativeBitIndex, newIsRight};
-
-                    parentNodePointer.executeForSpecificNodeType(false, [&](auto &parentNode) -> void {
-                        hot::commons::InsertInformation const &insertInformation = parentNode.getInsertInformation(
-                                parentInsertStackEntry.mSearchResultForInsert.mEntryIndex, significantKeyInformation
-                        );
-
-                        unsigned int entryOffset = (newIsRight) ? 0 : 1;
-                        HOTSingleThreadedChildPointer valueToInsert{
-                                (newIsRight) ? splitEntries.mRight : splitEntries.mLeft};
-                        HOTSingleThreadedChildPointer valueToReplace{
-                                (newIsRight) ? splitEntries.mLeft : splitEntries.mRight};
-
-                        if (!parentNode.isFull()) {
-                            HOTSingleThreadedChildPointer newNodePointer = parentNode.addEntry(insertInformation,
-                                                                                               valueToInsert);
-                            newNodePointer.getNode()->getPointers()[
-                                    parentInsertStackEntry.mSearchResultForInsert.mEntryIndex +
-                                    entryOffset] = valueToReplace;
-                            *parentInsertStackEntry.mChildPointer = newNodePointer;
-                        } else {
-                            //The diffing Bit index cannot be larger as the parents mostSignificantBitIndex. the reason is that otherwise
-                            //the trie condition would be violated
-                            assert(parentInsertStackEntry.mSearchResultForInsert.mMostSignificantBitIndex <
-                                   splitEntries.mDiscriminativeBitIndex);
-                            //Furthermore due to the trie condition it is safe to assume that both the existing entry and the new entry will be part of the same subtree
-                            hot::commons::BiNode<HOTSingleThreadedChildPointer> const &newSplitEntries = parentNode.split(
-                                    insertInformation, valueToInsert);
-                            //Detect subtree side
-                            //This newSplitEntries.mLeft.getHeight() == parentNodePointer.getHeight() check is important because in case of a split with 1:31 it can happend that if
-                            //the 1 entry is not a leaf node the node it is pointing to will be pulled up, which implies that the numberEntriesInLowerPart are not correct anymore.
-                            unsigned int numberEntriesInLowerPart =
-                                    newSplitEntries.mLeft.getHeight() == parentNode.mHeight
-                                    ? newSplitEntries.mLeft.getNumberEntries() : 1;
-                            bool isInUpperPart = numberEntriesInLowerPart <=
-                                                 parentInsertStackEntry.mSearchResultForInsert.mEntryIndex;
-                            //Here is problem because of parentInsertstackEntry
-                            unsigned int correspondingEntryIndexInPart =
-                                    parentInsertStackEntry.mSearchResultForInsert.mEntryIndex -
-                                    (isInUpperPart * numberEntriesInLowerPart) + entryOffset;
-                            HOTSingleThreadedChildPointer nodePointerContainingSplitEntries = (isInUpperPart)
-                                                                                              ? newSplitEntries.mRight
-                                                                                              : newSplitEntries.mLeft;
-                            nodePointerContainingSplitEntries.getNode()->getPointers()[correspondingEntryIndexInPart] = valueToReplace;
-                            integrateBiNodeIntoTree(insertStack, parentDepth, newSplitEntries, true);
-                        }
-                        delete &parentNode;
-                    });
-
-
-
-
-                    //Order because branch prediction might choose this case in first place
-
-                }
-            }
-        }
-
-        template<typename NodeType>
-        inline void insertNewValue(
-                NodeType const &existingNode, std::array<HOTSingleThreadedInsertStackEntry, 64> &insertStack,
-                hot::commons::InsertInformation const &insertInformation, unsigned int insertDepth,
-                HOTSingleThreadedChildPointer const &valueToInsert
-        ) {
-            HOTSingleThreadedInsertStackEntry const &insertStackEntry = insertStack[insertDepth];
-
-            if (!existingNode.isFull()) {
-                HOTSingleThreadedChildPointer newNodePointer = existingNode.addEntry(insertInformation, valueToInsert);
-                *(insertStackEntry.mChildPointer) = newNodePointer;
-                delete &existingNode;
-            } else {
-                assert(insertInformation.mKeyInformation.mAbsoluteBitIndex !=
-                       insertStackEntry.mSearchResultForInsert.mMostSignificantBitIndex);
-                if (insertInformation.mKeyInformation.mAbsoluteBitIndex >
-                    insertStackEntry.mSearchResultForInsert.mMostSignificantBitIndex) {
-                    hot::commons::BiNode<HOTSingleThreadedChildPointer> const &binaryNode = existingNode.split(
-                            insertInformation, valueToInsert);
-                    integrateBiNodeIntoTree(insertStack, insertDepth, binaryNode, true);
+                if (!existingNode.isFull()) {
+                    HOTSingleThreadedChildPointer newNodePointer = existingNode.addEntry(insertInformation,
+                                                                                         valueToInsert);
+                    *(insertStackEntry.mChildPointer) = newNodePointer;
                     delete &existingNode;
                 } else {
+                    assert(insertInformation.mKeyInformation.mAbsoluteBitIndex !=
+                           insertStackEntry.mSearchResultForInsert.mMostSignificantBitIndex);
+                    if (insertInformation.mKeyInformation.mAbsoluteBitIndex >
+                        insertStackEntry.mSearchResultForInsert.mMostSignificantBitIndex) {
+                        hot::commons::BiNode<HOTSingleThreadedChildPointer> const &binaryNode = existingNode.split(
+                                insertInformation, valueToInsert);
+                        integrateBiNodeIntoTree(insertStack, insertDepth, binaryNode, true);
+                        delete &existingNode;
+                    } else {
+                        hot::commons::BiNode<HOTSingleThreadedChildPointer> const &binaryNode = hot::commons::BiNode<HOTSingleThreadedChildPointer>::createFromExistingAndNewEntry(
+                                insertInformation.mKeyInformation, *insertStackEntry.mChildPointer, valueToInsert);
+                        integrateBiNodeIntoTree(insertStack, insertDepth, binaryNode, true);
+                    }
+                }
+            }
+
+            template<typename NodeType>
+            inline void insertNewValueResultingInNewPartitionRoot(
+                    NodeType const &existingNode, std::array<HOTSingleThreadedInsertStackEntry, 64> &insertStack,
+                    const hot::commons::DiscriminativeBit &keyInformation,
+                    unsigned int insertDepth, HOTSingleThreadedChildPointer const &valueToInsert
+            ) {
+                HOTSingleThreadedInsertStackEntry const &insertStackEntry = insertStack[insertDepth];
+                if (!existingNode.isFull()) {
+                    //As the insert results in a new partition root, no prefix bits are set and all entries in the partition are affected
+                    hot::commons::InsertInformation insertInformation{0, 0,
+                                                                      static_cast<uint32_t>(existingNode.getNumberEntries()),
+                                                                      keyInformation};
+                    *(insertStackEntry.mChildPointer) = existingNode.addEntry(insertInformation, valueToInsert);
+                    delete &existingNode;
+                } else {
+                    assert(keyInformation.mAbsoluteBitIndex !=
+                           insertStackEntry.mSearchResultForInsert.mMostSignificantBitIndex);
                     hot::commons::BiNode<HOTSingleThreadedChildPointer> const &binaryNode = hot::commons::BiNode<HOTSingleThreadedChildPointer>::createFromExistingAndNewEntry(
-                            insertInformation.mKeyInformation, *insertStackEntry.mChildPointer, valueToInsert);
+                            keyInformation, *insertStackEntry.mChildPointer, valueToInsert);
                     integrateBiNodeIntoTree(insertStack, insertDepth, binaryNode, true);
                 }
             }
-        }
-
-        template<typename NodeType>
-        inline void insertNewValueResultingInNewPartitionRoot(
-                NodeType const &existingNode, std::array<HOTSingleThreadedInsertStackEntry, 64> &insertStack,
-                const hot::commons::DiscriminativeBit &keyInformation,
-                unsigned int insertDepth, HOTSingleThreadedChildPointer const &valueToInsert
-        ) {
-            HOTSingleThreadedInsertStackEntry const &insertStackEntry = insertStack[insertDepth];
-            if (!existingNode.isFull()) {
-                //As the insert results in a new partition root, no prefix bits are set and all entries in the partition are affected
-                hot::commons::InsertInformation insertInformation{0, 0,
-                                                                  static_cast<uint32_t>(existingNode.getNumberEntries()),
-                                                                  keyInformation};
-                *(insertStackEntry.mChildPointer) = existingNode.addEntry(insertInformation, valueToInsert);
-                delete &existingNode;
-            } else {
-                assert(keyInformation.mAbsoluteBitIndex !=
-                       insertStackEntry.mSearchResultForInsert.mMostSignificantBitIndex);
-                hot::commons::BiNode<HOTSingleThreadedChildPointer> const &binaryNode = hot::commons::BiNode<HOTSingleThreadedChildPointer>::createFromExistingAndNewEntry(
-                        keyInformation, *insertStackEntry.mChildPointer, valueToInsert);
-                integrateBiNodeIntoTree(insertStack, insertDepth, binaryNode, true);
-            }
-        }
-
-
+        };
     }
 }
-
-#endif

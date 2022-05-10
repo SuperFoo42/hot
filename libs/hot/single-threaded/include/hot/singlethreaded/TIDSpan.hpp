@@ -20,17 +20,24 @@ namespace hot {
 
         template<class ValueType, class TIDType>
         constexpr unsigned int determineStackSize() {
-            return (hardware_destructive_interference_size - sizeof(ValueType) - sizeof(size_t) - sizeof(std::vector<TIDType>)) /
+            return (hardware_destructive_interference_size - sizeof(ValueType) - sizeof(size_t) -
+                    sizeof(std::vector<TIDType>)) /
                    sizeof(TIDType);
         }
-
-        template<class ValueType, class TIDType, unsigned int StackSize = determineStackSize<TIDType>()>
+//TODO: set semantic, disallow duplicate TIDs
+        template<class ValueType, class TIDType, unsigned int StackSize = determineStackSize<ValueType, TIDType>()>
         struct TIDSpan {
             static_assert(StackSize > 0);
             ValueType value;
             size_t _size;
             std::array<TIDType, StackSize> stackValues;
             std::vector<TIDType> furtherValues;
+
+            TIDSpan() = default;
+
+            TIDSpan(const ValueType value, const TIDType tid) : value{value}, _size{1}, stackValues{}, furtherValues{} {
+                stackValues[0] = tid;
+            }
 
             TIDType &operator[](const size_t idx) {
                 if (idx < StackSize)
