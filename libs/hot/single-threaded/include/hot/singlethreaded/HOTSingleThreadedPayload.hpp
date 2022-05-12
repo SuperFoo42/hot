@@ -21,7 +21,6 @@
 //Helper Data Structures
 #include "HOTSingleThreadedInsertStackEntry.hpp"
 
-#include "hot/singlethreaded/HOTSingleThreadedPayloadIterator.hpp"
 #include "hot/singlethreaded/HOTSingleThreadedDeletionInformation.hpp"
 
 #include "idx/contenthelpers/KeyUtilities.hpp"
@@ -178,7 +177,7 @@ namespace hot {
             }
 
             inline bool remove(std::pair<ValueType, TIDType> const &toRemove) {
-                auto &key = extractKey(toRemove);
+                auto &key = toRemove.first;
                 auto const &fixedSizeKey = idx::contenthelpers::toFixSizedKey(
                         idx::contenthelpers::toBigEndianByteOrder(key));
                 uint8_t const *keyBytes = idx::contenthelpers::interpretAsByteArray(fixedSizeKey);
@@ -456,7 +455,7 @@ namespace hot {
             /**
              * @return an iterator to the first value according to the key order.
              */
-            inline const_iterator begin() const {
+            inline const_iterator begin() {
                 return isEmpty() ? END_ITERATOR : const_iterator(this);
             }
 
@@ -486,7 +485,7 @@ namespace hot {
                         idx::contenthelpers::toBigEndianByteOrder(searchKey));
                 uint8_t const *searchKeyBytes = idx::contenthelpers::interpretAsByteArray(fixedSizedSearchKey);
 
-                const_iterator it(this);
+                const_iterator it(this, current, current+1);
                 while (!current->isLeaf()) {
                     current = it.descend(current->executeForSpecificNodeType(true, [&](auto &node) {
                         return node.search(searchKeyBytes);
@@ -526,7 +525,7 @@ namespace hot {
                     return END_ITERATOR;
                 }
 
-                const_iterator it(this);
+                const_iterator it(this, &this->mRoot, &this->mRoot+1);
 
                 if (mRoot.isLeaf()) {
                     auto const &existingValue = tidToValue(mRoot.getTid());
@@ -954,10 +953,10 @@ namespace hot {
                     sizeof(HOTSingleThreadedIteratorStackEntry) * 64];
             HOTSingleThreadedIteratorStackEntry *mNodeStack;
             size_t mCurrentDepth = 0;
-            HOTSingleThreadedPayload<long, unsigned long> *const hot;
+            HOTSingleThreadedPayload<ValueType, TIDType> *const hot;
 
         public:
-            HOTSingleThreadedPayloadIterator(HOTSingleThreadedPayload<long, unsigned long> * const hot)
+            HOTSingleThreadedPayloadIterator(HOTSingleThreadedPayload<ValueType, TIDType> * const hot)
                     : HOTSingleThreadedPayloadIterator(hot, &hot->mRoot, &hot->mRoot + 1) {
                 descend();
             }
@@ -1027,7 +1026,5 @@ namespace hot {
         };
 
         template<typename ValueType, typename TIDType> HOTSingleThreadedChildPointer HOTSingleThreadedPayloadIterator<ValueType, TIDType>::END_TOKEN;
-
-
     }
 }

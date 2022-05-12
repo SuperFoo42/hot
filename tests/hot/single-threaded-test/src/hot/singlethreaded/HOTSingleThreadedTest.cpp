@@ -354,18 +354,19 @@ namespace hot {
             }
 
             BOOST_AUTO_TEST_CASE(duplicateValueInsertionWithDifferentTIDsAndKeys) {
-                using value_type = int64_t;
-                using tid_type = size_t;
-                auto hotSingleThreaded = std::make_shared<hot::singlethreaded::HOTSingleThreadedPayload<value_type, tid_type>>();
+                using value_type = uint64_t;
+                using tid_type = uint64_t;
+                auto hotSingleThreadedPayload = std::make_shared<hot::singlethreaded::HOTSingleThreadedPayload<value_type, tid_type>>();
+                auto hotSingleThreaded = std::make_shared<HOTSingleThreadedUint64>();
                 std::vector<std::pair<value_type, std::vector<tid_type>>> valuesToInsertRef;
                 std::vector<std::pair<value_type, tid_type>> valuesToInsert;
-                idx::utils::RandomRangeGenerator<uint64_t> rnd{12344567, 0, INT64_MAX};
+                idx::utils::RandomRangeGenerator<value_type> rnd{12344567, 0, INT64_MAX};
 
-                constexpr unsigned int numberValues = 100000;
+                constexpr unsigned int numberValues = 1000000;
 
                 for (size_t nKeys = 0; nKeys < numberValues; ++nKeys) {
                     auto key = rnd(); //value
-                    valuesToInsertRef.push_back(std::make_pair<value_type, std::vector<tid_type>>(key, {}));
+                    valuesToInsertRef.emplace_back(key, std::vector<tid_type>());
                     for (size_t i = 0u; i < 10; ++i) {
                         auto value = rnd();     //tids
                         valuesToInsertRef.back().second.push_back(value);
@@ -376,50 +377,57 @@ namespace hot {
                 std::mt19937_64 rng;
                 std::shuffle(valuesToInsert.begin(), valuesToInsert.end(), rng);
                 for (auto &value: valuesToInsert) {
-                    hotSingleThreaded->insert(value.first, value.second);
+                    hotSingleThreadedPayload->insert(value.first, value.second);
+                    hotSingleThreaded->insert(value.first);
                 }
 
                 for (auto &refValue: valuesToInsertRef) {
-                    auto resOpt = hotSingleThreaded->lookup(refValue.first);
+                    auto resOpt = hotSingleThreadedPayload->lookup(refValue.first);
+                    auto resRef = hotSingleThreaded->lookup(refValue.first);
                     BOOST_REQUIRE(resOpt.mIsValid);
+                    BOOST_REQUIRE(resRef.mIsValid);
+                    BOOST_REQUIRE(resRef.mValue == refValue.first);
                     auto res = resOpt.mValue;
-                    for (auto &el : res) {
+                    for (auto &el: res) {
                         BOOST_REQUIRE(std::find(refValue.second.begin(), refValue.second.end(), el) !=
                                       std::end(refValue.second));
                     }
                 }
 
                 //Not in test
-                for (auto i = 0; i < 10000; ++i)
-                {
+                for (auto i = 0; i < 10000; ++i) {
                     value_type random = rnd();
-                    if (std::find_if(valuesToInsertRef.begin(), valuesToInsertRef.end(),[random](const auto &val) {return val.first == random; }) == valuesToInsertRef.end()) {
-                        auto resOpt = hotSingleThreaded->lookup(random);
+                    if (std::find_if(valuesToInsertRef.begin(), valuesToInsertRef.end(),
+                                     [random](const auto &val) { return val.first == random; }) ==
+                        valuesToInsertRef.end()) {
+                        auto resOpt = hotSingleThreadedPayload->lookup(random);
                         BOOST_REQUIRE(!resOpt.mIsValid);
                     }
                 }
 
-                std::sort(valuesToInsertRef.begin(),valuesToInsertRef.end());
+                std::sort(valuesToInsertRef.begin(), valuesToInsertRef.end());
                 // lower bound queries
-                for (auto i = 0; i < 10000; ++i)
-                {
+                for (auto i = 0; i < 10000; ++i) {
                     value_type lb = rnd();
-                    auto iter = hotSingleThreaded->lower_bound(lb);
+                    auto iter = hotSingleThreadedPayload->lower_bound(lb);
 
-                    BOOST_REQUIRE(iter == hotSingleThreaded->end() || (*iter).value >= lb);
-                    while (iter != hotSingleThreaded->end())
-                    {
+                    BOOST_REQUIRE(iter == hotSingleThreadedPayload->end() || (*iter).value >= lb);
+                    while (iter != hotSingleThreadedPayload->end()) {
                         BOOST_REQUIRE((*iter).value >= lb);
                         ++iter;
                     }
                 }
 
                 // upper bound queries
-                for (auto i = 0; i < 10000; ++i)
-                {
+                for (auto i = 0; i < 10000; ++i) {
                     value_type ub = rnd();
-                    auto iter = hotSingleThreaded->upper_bound(ub);
-                    BOOST_REQUIRE(iter == hotSingleThreaded->end() || (*iter).value <= ub);
+                    auto end = hotSingleThreadedPayload->upper_bound(ub);
+                    auto iter = hotSingleThreadedPayload->begin();
+                    BOOST_REQUIRE(iter == hotSingleThreadedPayload->end() || (*iter).value <= ub);
+                    while (iter != end) {
+                        BOOST_REQUIRE((*iter).value <= ub);
+                        ++iter;
+                    }
                 }
             }
 
