@@ -15,7 +15,6 @@
 #include <hot/testhelpers/SampleTriples.hpp>
 
 #include <idx/contenthelpers/IdentityKeyExtractor.hpp>
-#include <idx/contenthelpers/ConstantKeyExtractor.hpp>
 #include <idx/contenthelpers/PairPointerKeyExtractor.hpp>
 #include <idx/contenthelpers/KeyComparator.hpp>
 #include <idx/contenthelpers/OptionalValue.hpp>
@@ -349,7 +348,7 @@ namespace hot {
                     valuesToInsert.emplace_back(key, value);
                 }
 
-                for (auto &value: valuesToInsert) { auto res = hotSingleThreaded->insert(value.first, value.second); }
+                for (auto &value: valuesToInsert) { hotSingleThreaded->insert(value.first, value.second); }
 
                 auto res = hotSingleThreaded->lookup(123456);
             }
@@ -362,7 +361,7 @@ namespace hot {
                 std::vector<std::pair<value_type, tid_type>> valuesToInsert;
                 idx::utils::RandomRangeGenerator<uint64_t> rnd{12344567, 0, INT64_MAX};
 
-                constexpr unsigned int numberValues = 1000;
+                constexpr unsigned int numberValues = 100000;
 
                 for (size_t nKeys = 0; nKeys < numberValues; ++nKeys) {
                     auto key = rnd(); //value
@@ -373,7 +372,9 @@ namespace hot {
                         valuesToInsert.emplace_back(key, value);
                     }
                 }
-                std::shuffle(valuesToInsert.begin(), valuesToInsert.end(), std::mt19937_64());
+
+                std::mt19937_64 rng;
+                std::shuffle(valuesToInsert.begin(), valuesToInsert.end(), rng);
                 for (auto &value: valuesToInsert) {
                     hotSingleThreaded->insert(value.first, value.second);
                 }
@@ -382,10 +383,43 @@ namespace hot {
                     auto resOpt = hotSingleThreaded->lookup(refValue.first);
                     BOOST_REQUIRE(resOpt.mIsValid);
                     auto res = resOpt.mValue;
-                    for (auto i = 0; i < res.size(); ++i) {
-                        BOOST_REQUIRE(std::find(refValue.second.begin(), refValue.second.end(), res[i]) !=
+                    for (auto &el : res) {
+                        BOOST_REQUIRE(std::find(refValue.second.begin(), refValue.second.end(), el) !=
                                       std::end(refValue.second));
                     }
+                }
+
+                //Not in test
+                for (auto i = 0; i < 10000; ++i)
+                {
+                    value_type random = rnd();
+                    if (std::find_if(valuesToInsertRef.begin(), valuesToInsertRef.end(),[random](const auto &val) {return val.first == random; }) == valuesToInsertRef.end()) {
+                        auto resOpt = hotSingleThreaded->lookup(random);
+                        BOOST_REQUIRE(!resOpt.mIsValid);
+                    }
+                }
+
+                std::sort(valuesToInsertRef.begin(),valuesToInsertRef.end());
+                // lower bound queries
+                for (auto i = 0; i < 10000; ++i)
+                {
+                    value_type lb = rnd();
+                    auto iter = hotSingleThreaded->lower_bound(lb);
+
+                    BOOST_REQUIRE(iter == hotSingleThreaded->end() || (*iter).value >= lb);
+                    while (iter != hotSingleThreaded->end())
+                    {
+                        BOOST_REQUIRE((*iter).value >= lb);
+                        ++iter;
+                    }
+                }
+
+                // upper bound queries
+                for (auto i = 0; i < 10000; ++i)
+                {
+                    value_type ub = rnd();
+                    auto iter = hotSingleThreaded->upper_bound(ub);
+                    BOOST_REQUIRE(iter == hotSingleThreaded->end() || (*iter).value <= ub);
                 }
             }
 

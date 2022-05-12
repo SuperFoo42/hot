@@ -24,6 +24,7 @@ namespace hot {
                     sizeof(std::vector<TIDType>)) /
                    sizeof(TIDType);
         }
+
 //TODO: set semantic, disallow duplicate TIDs
         template<class ValueType, class TIDType, unsigned int StackSize = determineStackSize<ValueType, TIDType>()>
         struct TIDSpan {
@@ -60,6 +61,60 @@ namespace hot {
 
             bool empty() const {
                 return _size == 0;
+            }
+
+            bool contains(const TIDType &tid) {
+                return std::find(begin(), end(), tid) == end();
+            }
+
+            struct Iterator {
+                Iterator(size_t start_pos, TIDSpan *const span) : pos{start_pos}, span{span} {
+
+                }
+
+                explicit Iterator(TIDSpan const *span) : pos{0}, span{span} {
+
+                }
+
+                TIDType &operator*() {
+                    return span->operator[](pos);
+                }
+
+                Iterator &operator++() {
+                    ++pos;
+                    return *this;
+                }
+
+                Iterator &operator--() {
+                    --pos;
+                    return *this;
+                }
+
+                bool operator==(const Iterator &other) const {
+                    return span == other.span && pos == other.pos;
+                }
+
+                bool operator!=(const Iterator &other) const {
+                    return !operator==(other);
+                }
+
+                using iterator_category = std::random_access_iterator_tag;
+                using difference_type = std::ptrdiff_t;
+                using value_type = TIDType;
+                using pointer = value_type *;
+                using reference = value_type &;
+
+            private:
+                size_t pos;
+                TIDSpan *const span;
+            };
+
+            Iterator begin() {
+                return Iterator(0, this);
+            }
+
+            Iterator end() {
+                return Iterator(_size, this);
             }
         };
     }

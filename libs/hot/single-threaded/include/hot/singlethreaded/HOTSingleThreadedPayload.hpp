@@ -21,7 +21,7 @@
 //Helper Data Structures
 #include "HOTSingleThreadedInsertStackEntry.hpp"
 
-#include "hot/singlethreaded/HOTSingleThreadedIterator.hpp"
+#include "hot/singlethreaded/HOTSingleThreadedPayloadIterator.hpp"
 #include "hot/singlethreaded/HOTSingleThreadedDeletionInformation.hpp"
 
 #include "idx/contenthelpers/KeyUtilities.hpp"
@@ -47,11 +47,15 @@ namespace hot {
  * @tparam KeyExtractor A Function given the ValueType returns a key, which by using the corresponding functions in idx::contenthelpers can be converted to a big endian ordered byte array.
  */
         template<typename ValueType, typename TIDType>
+        class
+        HOTSingleThreadedPayloadIterator;
+
+        template<typename ValueType, typename TIDType>
         struct HOTSingleThreadedPayload {
             static_assert(sizeof(ValueType) <= 8, "Only value types which can be stored in a pointer are allowed");
             using ResultType = TIDSpan<ValueType, TIDType>;
-            using const_iterator = HOTSingleThreadedIterator<ValueType>;
-            static const_iterator END_ITERATOR;
+            using const_iterator = HOTSingleThreadedPayloadIterator<ValueType, TIDType>;
+            const_iterator END_ITERATOR {};
 
             HOTSingleThreadedChildPointer mRoot;
             std::vector<ResultType> tidList;
@@ -106,11 +110,11 @@ namespace hot {
             }
 
             inline bool isEmpty() const {
-                return !mRoot.isLeaf() & (mRoot.getNode() == nullptr);
+                return !mRoot.isLeaf() && mRoot.getNode() == nullptr;
             }
 
             inline bool isRootANode() const {
-                return mRoot.isNode() & (mRoot.getNode() != nullptr);
+                return mRoot.isNode() && mRoot.getNode() != nullptr;
             }
 
             /**
@@ -453,7 +457,7 @@ namespace hot {
              * @return an iterator to the first value according to the key order.
              */
             inline const_iterator begin() const {
-                return isEmpty() ? END_ITERATOR : const_iterator(&mRoot);
+                return isEmpty() ? END_ITERATOR : const_iterator(this);
             }
 
             /**
@@ -482,7 +486,7 @@ namespace hot {
                         idx::contenthelpers::toBigEndianByteOrder(searchKey));
                 uint8_t const *searchKeyBytes = idx::contenthelpers::interpretAsByteArray(fixedSizedSearchKey);
 
-                const_iterator it(current, current + 1);
+                const_iterator it(this);
                 while (!current->isLeaf()) {
                     current = it.descend(current->executeForSpecificNodeType(true, [&](auto &node) {
                         return node.search(searchKeyBytes);
@@ -491,7 +495,6 @@ namespace hot {
 
                 auto const &leafValue = tidToValue(current->getTid());
 
-                //TODO: content equals without TID check?
                 return idx::contenthelpers::contentEquals(extractKey(leafValue), searchKey) ? it : END_ITERATOR;
             }
 
@@ -503,7 +506,7 @@ namespace hot {
              * @param searchKey the search key to determine the lower bound for
              * @return either the first entry which has a key, which is not smaller than the given search key or the end iterator if no entry fullfills the lower bound condition
              */
-            inline const_iterator lower_bound(ValueType const &searchKey) const {
+            inline const_iterator lower_bound(ValueType const &searchKey)  {
                 return lower_or_upper_bound(searchKey, true);
             }
 
@@ -513,25 +516,24 @@ namespace hot {
              * @param searchKey the search key to determine the upper bound for
              * @return either the first entry which has a key larger than the search key or the end iterator if no entry fulfills the uper bound condition
              */
-            inline const_iterator upper_bound(ValueType const &searchKey) const {
+            inline const_iterator upper_bound(ValueType const &searchKey)  {
                 return lower_or_upper_bound(searchKey, false);
             }
 
         private:
-            inline const_iterator lower_or_upper_bound(ValueType const &searchKey, bool is_lower_bound = true) const {
+            inline const_iterator lower_or_upper_bound(ValueType const &searchKey, bool is_lower_bound = true) {
                 if (isEmpty()) {
                     return END_ITERATOR;
                 }
 
-                const_iterator it(&mRoot, &mRoot + 1);
+                const_iterator it(this);
 
                 if (mRoot.isLeaf()) {
                     auto const &existingValue = tidToValue(mRoot.getTid());
                     auto const &existingKey = extractKey(existingValue);
 
-                    //TODO: equals ignoring TIDs
                     return (idx::contenthelpers::contentEquals(searchKey, existingKey) ||
-                            compareKeys(existingKey, searchKey)) ? it : END_ITERATOR;
+                            existingKey < searchKey) ? it : END_ITERATOR;
                 } else {
                     auto const &fixedSizeKey = idx::contenthelpers::toFixSizedKey(
                             idx::contenthelpers::toBigEndianByteOrder(searchKey));
@@ -547,7 +549,7 @@ namespace hot {
                         }), current->getNode()->end());
                     }
 
-                    auto const &existingValue = *it; //TODO: fix * operator to call local tidToValue function
+                    auto const &existingValue = *it;
                     auto const &existingFixedSizeKey = idx::contenthelpers::toFixSizedKey(
                             idx::contenthelpers::toBigEndianByteOrder(extractKey(existingValue)));
                     uint8_t const *existingKeyBytes = idx::contenthelpers::interpretAsByteArray(existingFixedSizeKey);
@@ -940,5 +942,92 @@ namespace hot {
                 }
             }
         };
+
+        template<typename ValueType, typename TIDType>
+        class HOTSingleThreadedPayloadIterator {
+            friend struct HOTSingleThreadedPayload<ValueType, TIDType>;
+            using iterator = HOTSingleThreadedPayloadIterator<ValueType, TIDType>;
+            static HOTSingleThreadedChildPointer END_TOKEN;
+            using ResultType = typename HOTSingleThreadedPayload<ValueType, TIDType>::ResultType;
+
+            alignas(std::alignment_of<HOTSingleThreadedIteratorStackEntry>()) char mRawNodeStack[
+                    sizeof(HOTSingleThreadedIteratorStackEntry) * 64];
+            HOTSingleThreadedIteratorStackEntry *mNodeStack;
+            size_t mCurrentDepth = 0;
+            HOTSingleThreadedPayload<long, unsigned long> *const hot;
+
+        public:
+            HOTSingleThreadedPayloadIterator(HOTSingleThreadedPayload<long, unsigned long> * const hot)
+                    : HOTSingleThreadedPayloadIterator(hot, &hot->mRoot, &hot->mRoot + 1) {
+                descend();
+            }
+
+            HOTSingleThreadedPayloadIterator(HOTSingleThreadedPayloadIterator const &other) : mNodeStack(
+                    reinterpret_cast<HOTSingleThreadedIteratorStackEntry *>(mRawNodeStack)), hot(other.hot) {
+                std::memcpy(this->mRawNodeStack, other.mRawNodeStack,
+                            sizeof(HOTSingleThreadedIteratorStackEntry) * (other.mCurrentDepth + 1));
+                mCurrentDepth = other.mCurrentDepth;
+            }
+
+            HOTSingleThreadedPayloadIterator() : mNodeStack(
+                    reinterpret_cast<HOTSingleThreadedIteratorStackEntry *>(mRawNodeStack)), hot(
+                    nullptr) {
+                mNodeStack[0].init(&END_TOKEN, &END_TOKEN);
+            }
+
+        public:
+            ResultType &operator*() {
+                return hot->tidToValue(mNodeStack[mCurrentDepth].getCurrent()->getTid());
+            }
+
+            iterator &operator++() {
+                mNodeStack[mCurrentDepth].advance();
+                while (mCurrentDepth > 0 && mNodeStack[mCurrentDepth].isExhausted()) {
+                    --mCurrentDepth;
+                    mNodeStack[mCurrentDepth].advance();
+                }
+                if (mNodeStack[0].isExhausted()) {
+                    mNodeStack[0].init(&END_TOKEN, &END_TOKEN);
+                } else {
+                    descend();
+                }
+                return *this;
+            }
+
+            bool operator==(iterator const &other) const {
+                return *mNodeStack[mCurrentDepth].getCurrent() ==
+                       *other.mNodeStack[other.mCurrentDepth].getCurrent();
+            }
+
+            bool operator!=(iterator const &other) const {
+                return *mNodeStack[mCurrentDepth].getCurrent() !=
+                       *other.mNodeStack[other.mCurrentDepth].getCurrent();
+            }
+
+        private:
+            HOTSingleThreadedPayloadIterator(HOTSingleThreadedPayload<ValueType, TIDType> *const hot,
+                                             HOTSingleThreadedChildPointer const *currentRoot,
+                                             HOTSingleThreadedChildPointer const *rootEnd) : mNodeStack(
+                    reinterpret_cast<HOTSingleThreadedIteratorStackEntry *>(mRawNodeStack)), hot(hot) {
+                mNodeStack[0].init(currentRoot, rootEnd);
+            }
+
+            void descend() {
+                HOTSingleThreadedChildPointer const *currentSubtreeRoot = mNodeStack[mCurrentDepth].getCurrent();
+                while (currentSubtreeRoot->isAValidNode()) {
+                    HOTSingleThreadedNodeBase *currentSubtreeRootNode = currentSubtreeRoot->getNode();
+                    currentSubtreeRoot = descend(currentSubtreeRootNode->begin(), currentSubtreeRootNode->end());
+                }
+            }
+
+            HOTSingleThreadedChildPointer const *
+            descend(HOTSingleThreadedChildPointer const *current, HOTSingleThreadedChildPointer const *end) {
+                return mNodeStack[++mCurrentDepth].init(current, end);
+            }
+        };
+
+        template<typename ValueType, typename TIDType> HOTSingleThreadedChildPointer HOTSingleThreadedPayloadIterator<ValueType, TIDType>::END_TOKEN;
+
+
     }
 }
