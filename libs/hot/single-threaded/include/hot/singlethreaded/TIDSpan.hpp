@@ -104,6 +104,14 @@ namespace hot {
                 using pointer = value_type *;
                 using reference = value_type &;
 
+                difference_type operator-(const Iterator &other) const {
+                    return other.pos - pos;
+                }
+
+                difference_type operator+=(const std::ptrdiff_t size) {
+                    return pos += size;
+                }
+
             private:
                 size_t pos;
                 TIDSpan *const span;

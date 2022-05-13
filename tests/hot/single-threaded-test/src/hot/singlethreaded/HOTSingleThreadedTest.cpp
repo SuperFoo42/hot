@@ -362,7 +362,7 @@ namespace hot {
                 std::vector<std::pair<value_type, tid_type>> valuesToInsert;
                 idx::utils::RandomRangeGenerator<value_type> rnd{12344567, 0, INT64_MAX};
 
-                constexpr unsigned int numberValues = 1000000;
+                constexpr unsigned int numberValues = 10000;
 
                 for (size_t nKeys = 0; nKeys < numberValues; ++nKeys) {
                     auto key = rnd(); //value
